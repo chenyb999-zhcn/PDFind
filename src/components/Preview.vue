@@ -52,7 +52,7 @@ function setupObserver() {
         }
       }
     },
-    { root: body, rootMargin: "400px 0px" },
+    { root: body, rootMargin: "900px 0px" },
   );
   for (const el of pageEls) observer.observe(el);
 }
@@ -88,6 +88,31 @@ interface TextSeg {
   width: number;
   start: number;
   end: number;
+  cum: number[]; // 逐字符累计测宽(未归一化), cum[i] = 前 i 个字符宽度之和
+  msum: number; // 测宽总和
+}
+
+// 离屏 canvas 逐字符测宽: 数字/CJK 等混排时等宽假设误差大
+const measureCanvas = document.createElement("canvas");
+const measureCtx = measureCanvas.getContext("2d");
+
+function charOffsets(str: string): { cum: number[]; msum: number } {
+  const cum = new Array<number>(str.length + 1);
+  cum[0] = 0;
+  let sum = 0;
+  if (measureCtx) {
+    measureCtx.font = "100px sans-serif";
+    for (let i = 0; i < str.length; i++) {
+      sum += measureCtx.measureText(str[i]).width;
+      cum[i + 1] = sum;
+    }
+  }
+  if (sum <= 0) {
+    // 测量不可用时退化为等宽
+    for (let i = 0; i <= str.length; i++) cum[i] = i;
+    sum = str.length;
+  }
+  return { cum, msum: sum };
 }
 
 // 关键字高亮: 取文本层拼接全页文本, 命中串按逐字等宽近似映射为页面矩形
@@ -98,6 +123,7 @@ async function highlightPage(n: number) {
   el.querySelectorAll(".hl").forEach((h) => h.remove());
   const re = kwRegex();
   if (!re) return;
+  let boxes = 0;
   try {
     const page = await doc.getPage(n);
     const canvas = el.querySelector("canvas");
@@ -110,15 +136,27 @@ async function highlightPage(n: number) {
     const segs: TextSeg[] = [];
     for (const it of tc.items) {
       if (!("str" in it) || typeof it.str !== "string" || !it.str) continue;
-      segs.push({
-        str: it.str,
-        transform: it.transform,
-        width: it.width,
-        start: full.length,
-        end: full.length + it.str.length,
-      });
+      // full 始终拼接保证偏移对齐; 仅有效几何信息的项参与矩形映射
+      const start = full.length;
       full += it.str;
       if ("hasEOL" in it && it.hasEOL) full += "\n";
+      if (
+        Array.isArray(it.transform) &&
+        it.transform.length === 6 &&
+        typeof it.width === "number" &&
+        Number.isFinite(it.width)
+      ) {
+        const { cum, msum } = charOffsets(it.str);
+        segs.push({
+          str: it.str,
+          transform: it.transform,
+          width: it.width,
+          start,
+          end: start + it.str.length,
+          cum,
+          msum,
+        });
+      }
     }
 
     let m: RegExpExecArray | null;
@@ -133,20 +171,35 @@ async function highlightPage(n: number) {
         if (seg.end <= s || seg.start >= e) continue;
         const ls = Math.max(s, seg.start) - seg.start;
         const le = Math.min(e, seg.end) - seg.start;
-        const per = (seg.width * vp.scale) / seg.str.length;
         const tx = mul6(vp.transform, seg.transform);
         const h = Math.hypot(tx[2], tx[3]) || 10;
+        // 段宽: PDF 宽度 × 视口缩放; 异常零宽时按字号估算兜底
+        const segW =
+          seg.width > 0 ? seg.width * vp.scale : h * 0.55 * seg.str.length;
+        // 测宽归一化: 使累计测宽精确对齐段的真实宽度
+        const k = segW / seg.msum;
+        const xs = seg.cum[ls] * k;
+        const xe = seg.cum[le] * k;
         const d = document.createElement("div");
         d.className = "hl";
-        d.style.left = ((tx[4] + per * ls) / canvas.width) * 100 + "%";
+        d.style.left = ((tx[4] + xs) / canvas.width) * 100 + "%";
         d.style.top = ((tx[5] - h) / canvas.height) * 100 + "%";
-        d.style.width = ((per * (le - ls)) / canvas.width) * 100 + "%";
-        d.style.height = (h / canvas.height) * 100 + "%";
+        d.style.width = ((xe - xs) / canvas.width) * 100 + "%";
+        // 高度按字号 1.32 倍: 底边落在基线下约 32% 字高处, 红线避开字形下伸笔画不压字
+        d.style.height = ((h * 1.32) / canvas.height) * 100 + "%";
         el.appendChild(d);
+        boxes++;
       }
     }
-  } catch {
-    // 文本层获取失败时静默跳过高亮
+    if (boxes === 0 && full.trim()) {
+      // 排障线索: 文本已取到但零命中, 输出样本便于核对关键词与实际文本差异
+      console.debug(
+        `[PDFind] 第 ${n} 页零命中, 关键词 "${props.keyword}", 文本样本:`,
+        full.slice(0, 120),
+      );
+    }
+  } catch (e) {
+    console.warn(`[PDFind] 第 ${n} 页高亮失败:`, e);
   }
 }
 
@@ -165,13 +218,23 @@ async function renderPage(n: number) {
     if (!canvas) return;
     const base = page.getViewport({ scale: 1 });
     const avail = el.clientWidth || 800;
+    // 渲染前按本页真实宽高比精确定高, 消除与第 1 页尺寸差异导致的跳动
+    if (!el.classList.contains("done")) {
+      el.style.height = Math.round((avail * base.height) / base.width) + "px";
+    }
     // 乘 devicePixelRatio: 高分屏/窗口放大重渲后依然锐利
     const dpr = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
     const scale = Math.min(4, Math.max(0.5, (avail * dpr) / base.width));
     const vp = page.getViewport({ scale });
-    canvas.width = Math.round(vp.width);
-    canvas.height = Math.round(vp.height);
-    await page.render({ canvas, viewport: vp }).promise;
+    // 离屏渲染完成后原子拷贝, 渲染期间旧画面保持显示, 不闪黑
+    const off = document.createElement("canvas");
+    off.width = Math.round(vp.width);
+    off.height = Math.round(vp.height);
+    await page.render({ canvas: off, viewport: vp }).promise;
+    if (doc !== d) return;
+    canvas.width = off.width;
+    canvas.height = off.height;
+    canvas.getContext("2d")?.drawImage(off, 0, 0);
     el.style.height = "auto";
     el.classList.add("done");
     highlightPage(n);
@@ -229,12 +292,7 @@ function rerenderAll() {
     // 冻结当前高度占位, 避免重渲期间滚动条跳动
     el.style.height = el.getBoundingClientRect().height + "px";
     el.classList.remove("done");
-    el.querySelectorAll(".hl").forEach((h) => h.remove());
-    const c = el.querySelector("canvas");
-    if (c) {
-      c.width = 0;
-      c.height = 0;
-    }
+    // 不清空 canvas: 旧画面保持显示, 待离屏渲染完成原子替换, 无黑窗
     const n = Number(el.dataset.page);
     if (n) renderedPages.delete(n);
   }
@@ -276,7 +334,17 @@ async function load() {
     await applyAspect(v1.height / v1.width);
     setupObserver();
     if (pagesRef.value && !resizeObserver) {
-      resizeObserver = new ResizeObserver(() => {
+      let lastW = 0;
+      resizeObserver = new ResizeObserver((entries) => {
+        const w = Math.round(
+          entries[entries.length - 1]?.contentRect.width ?? 0,
+        );
+        if (!lastW) {
+          lastW = w; // 首次回调只记基线
+          return;
+        }
+        if (w === lastW) return; // 高度变化(新页渲染沉淀)忽略, 防整屏重渲闪黑
+        lastW = w;
         clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(rerenderAll, 200);
       });
@@ -434,25 +502,20 @@ onUnmounted(() => {
 .pwrap {
   position: relative;
   min-height: 200px;
-  background: #3d4043;
+  background: #e3e6ea;
   border-radius: 2px;
 }
 .pwrap canvas {
   display: block;
   width: 100%;
-  opacity: 0;
-  transition: opacity 0.15s;
 }
-.pwrap.done canvas {
-  opacity: 1;
-}
-.pwrap .hl {
+.pwrap :deep(.hl) {
   position: absolute;
-  background: rgba(255, 193, 7, 0.42);
-  border: 1px solid rgba(230, 145, 0, 0.6);
-  border-radius: 2px;
+  background: transparent;
+  border-bottom: 3px solid #e5484d;
+  border-radius: 0;
   pointer-events: none;
-  mix-blend-mode: multiply;
+  box-sizing: border-box;
 }
 .plabel {
   position: absolute;
