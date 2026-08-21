@@ -2,6 +2,7 @@ mod commands;
 mod engine;
 mod pdfx;
 mod state;
+mod tree;
 mod walker;
 
 use state::SearchState;
@@ -15,7 +16,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::search_file,
             commands::start_search,
-            commands::cancel_search
+            commands::cancel_search,
+            tree::list_tree_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

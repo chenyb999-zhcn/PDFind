@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import Preview from "./components/Preview.vue";
+import DirTree from "./components/DirTree.vue";
 
 interface Hit {
   page: number;
@@ -46,6 +47,32 @@ const done = ref<DoneEvent | null>(null);
 const previewPath = ref("");
 const previewPage = ref(1);
 const previewW = ref<number | null>(null); // 拖拽后的像素宽, null=默认 46%
+
+// 目录树面板状态(显隐持久化)
+const treeVisible = ref(
+  (() => {
+    try {
+      return localStorage.getItem("dirtree.visible") !== "0";
+    } catch {
+      return true;
+    }
+  })(),
+);
+
+function toggleTree() {
+  treeVisible.value = !treeVisible.value;
+  try {
+    localStorage.setItem("dirtree.visible", treeVisible.value ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+// 目录树点击: 只填路径, 不自动搜索
+function onTreePick(path: string, dirMode: boolean) {
+  filePath.value = path;
+  isDir.value = dirMode;
+}
 
 // 分隔条拖拽: 预览在右侧, 向左拖增宽
 function startDrag(e: MouseEvent) {
@@ -182,6 +209,14 @@ const totalHits = () => results.value.reduce((s, r) => s + r.hits.length, 0);
 <template>
   <main class="wrap">
     <div class="body">
+      <DirTree v-show="treeVisible" class="tree-panel" @pick="onTreePick" />
+      <div
+        class="tree-toggle"
+        :title="treeVisible ? '隐藏目录树' : '显示目录树'"
+        @click="toggleTree"
+      >
+        {{ treeVisible ? "‹" : "›" }}
+      </div>
       <div class="left">
         <div class="toolbar">
           <input
@@ -340,6 +375,25 @@ body {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.tree-panel {
+  flex: 0 0 240px;
+}
+.tree-toggle {
+  flex: 0 0 16px;
+  margin: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: #57606a;
+  cursor: pointer;
+  user-select: none;
+  font-size: 14px;
+}
+.tree-toggle:hover {
+  background: #eaeef2;
+  color: #1f6feb;
 }
 .splitter {
   flex: 0 0 9px;
