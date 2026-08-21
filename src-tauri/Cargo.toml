@@ -1,6 +1,6 @@
 [package]
 name = "pdfind"
-version = "0.1.0"
+version = "0.0.1"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -8,11 +8,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+# 桌面端(Windows/macOS/Linux)仅需 rlib; cdylib/staticlib 只服务于移动端,
+# 且 msys2 ucrt64 ld 链接 debug cdylib 时静默失败, 故移除
 name = "pdfind_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
