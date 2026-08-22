@@ -8,22 +8,30 @@ use tauri::Manager;
 
 static PDFIUM: OnceLock<Pdfium> = OnceLock::new();
 
-// 按优先级尝试的 dll 候选路径:打包资源目录 > exe 同目录 > 开发时 src-tauri/binaries
+// pdfium 动态库文件名按平台区分
+#[cfg(windows)]
+const PDFIUM_LIB: &str = "pdfium.dll";
+#[cfg(target_os = "macos")]
+const PDFIUM_LIB: &str = "libpdfium.dylib";
+#[cfg(target_os = "linux")]
+const PDFIUM_LIB: &str = "libpdfium.so";
+
+// 按优先级尝试的候选路径:打包资源目录 > exe 同目录 > 开发时 src-tauri/binaries
 fn dll_candidates(resource_dir: Option<&Path>) -> Vec<PathBuf> {
     let mut v = Vec::new();
     if let Some(rd) = resource_dir {
-        v.push(rd.join("pdfium.dll"));
-        v.push(rd.join("binaries").join("pdfium.dll"));
+        v.push(rd.join(PDFIUM_LIB));
+        v.push(rd.join("binaries").join(PDFIUM_LIB));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            v.push(dir.join("pdfium.dll"));
+            v.push(dir.join(PDFIUM_LIB));
         }
     }
     v.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("binaries")
-            .join("pdfium.dll"),
+            .join(PDFIUM_LIB),
     );
     v
 }

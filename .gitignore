@@ -18,9 +18,6 @@ src-tauri/gen/schemas/
 # pdfium 动态库体积大,不入库
 src-tauri/binaries/
 
-# aria2 下载临时文件
-*.aria2
-c44113203bfee16cc28b9d344d14a306943708c3828f6a765962deb83e10651c
 
 # Editor directories and files
 .vscode/*
@@ -32,3 +29,6 @@ c44113203bfee16cc28b9d344d14a306943708c3828f6a765962deb83e10651c
 *.njsproj
 *.sln
 *.sw?
+ 
+# md
+AGENT.md

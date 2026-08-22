@@ -50,6 +50,20 @@ npm run tauri dev
 npm run tauri build
 ```
 
+## 跨平台发布
+
+GitHub Actions 自动构建 macOS 与 Linux 安装包（推送 `v*` 标签触发），见 [.github/workflows/build-release.yml](.github/workflows/build-release.yml)。
+
+- **macOS**（universal dmg，M 系列 + Intel）：双击安装；未签名提示「未知开发者」时，右键→打开，或终端执行 `xattr -cr /Applications/PDFind.app`
+- **Linux**：
+  ```bash
+  sudo dpkg -i PDFind_<version>_amd64.deb     # Debian/Ubuntu
+  sudo rpm -i PDFind-<version>.x86_64.rpm      # Fedora/RHEL
+  ```
+- **Windows**：从 GitHub Release 下载 `PDFind-vX.X.X-win64.zip`，解压后运行 `pdfind.exe`（需保持同目录 `pdfium.dll`）
+
+> 跨平台需在 `src-tauri/binaries/` 放置对应平台的 pdfium 动态库：Windows `pdfium.dll` / macOS `libpdfium.dylib` / Linux `libpdfium.so`。
+
 ## 项目结构
 
 ```

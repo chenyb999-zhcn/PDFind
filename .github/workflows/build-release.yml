@@ -1,0 +1,158 @@
+name: Build & Release (multi-platform)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    name: macOS universal dmg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend deps
+        run: npm install
+
+      - name: Download pdfium (universal)
+        run: |
+          curl -L https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-mac-univ.tgz | tar xz
+          mkdir -p src-tauri/binaries
+          mv lib/libpdfium.dylib src-tauri/binaries/
+          # Apple Silicon 强制要求代码签名, 否则启动即 killed:9
+          codesign --force --sign - src-tauri/binaries/libpdfium.dylib
+
+      - name: Build universal dmg
+        run: npx tauri build --target universal-apple-darwin
+
+      - name: Upload dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFind-macos-universal
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+
+  build-linux-x64:
+    name: Linux x64 (deb + rpm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend deps
+        run: npm install
+
+      - name: Download pdfium (linux x64)
+        run: |
+          curl -L https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz | tar xz
+          mkdir -p src-tauri/binaries
+          mv lib/libpdfium.so src-tauri/binaries/
+
+      - name: Build deb + rpm
+        run: npx tauri build --bundles deb,rpm
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFind-linux-x64-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+
+      - name: Upload rpm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFind-linux-x64-rpm
+          path: src-tauri/target/release/bundle/rpm/*.rpm
+
+  build-linux-arm64:
+    name: Linux arm64 (deb + rpm)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend deps
+        run: npm install
+
+      - name: Download pdfium (linux arm64)
+        run: |
+          curl -L https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-arm64.tgz | tar xz
+          mkdir -p src-tauri/binaries
+          mv lib/libpdfium.so src-tauri/binaries/
+
+      - name: Build deb + rpm
+        run: npx tauri build --bundles deb,rpm
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFind-linux-arm64-deb
+          path: src-tauri/target/release/bundle/deb/*.deb
+
+      - name: Upload rpm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFind-linux-arm64-rpm
+          path: src-tauri/target/release/bundle/rpm/*.rpm
+
+  release:
+    name: Create GitHub Release
+    needs: [build-mac, build-linux-x64, build-linux-arm64]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
