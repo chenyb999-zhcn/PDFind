@@ -2580,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "pdfind"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "ignore",
  "pdfium-render",
@@ -2592,6 +2592,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "windows",
 ]
 
 [[package]]

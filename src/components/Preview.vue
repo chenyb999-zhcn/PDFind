@@ -203,6 +203,49 @@ async function highlightPage(n: number) {
   }
 }
 
+// 构建不可见文本层: 透明 span 精确定位到对应文字位置, 支持鼠标拖选与复制
+function buildTextLayer(
+  page: pdfjs.PDFPageProxy,
+  vp: pdfjs.PageViewport,
+  canvas: HTMLCanvasElement,
+  el: HTMLElement,
+) {
+  const layer = el.querySelector<HTMLElement>(".text-layer");
+  if (!layer) return;
+  layer.innerHTML = "";
+  // 背景像素 / CSS 像素 比(渲染时乘了 dpr)
+  const dpr = canvas.width / (el.clientWidth || canvas.width);
+  page.getTextContent().then(
+    (tc) => {
+      for (const it of tc.items) {
+        if (!("str" in it) || typeof it.str !== "string" || !it.str) continue;
+        if (!Array.isArray(it.transform) || it.transform.length !== 6) continue;
+        if (typeof it.width !== "number" || !Number.isFinite(it.width)) continue;
+        const tx = mul6(vp.transform, it.transform);
+        const hPx = Math.hypot(tx[2], tx[3]); // 字高(背景像素)
+        if (hPx <= 0) continue;
+        const fsCss = hPx / dpr;
+        const span = document.createElement("span");
+        span.textContent = it.str;
+        span.style.left = (tx[4] / canvas.width) * 100 + "%";
+        span.style.top = ((tx[5] - hPx) / canvas.height) * 100 + "%";
+        span.style.fontSize = fsCss + "px";
+        // 水平缩放对齐 PDF 实际宽度, 选区更贴合
+        if (measureCtx && it.width > 0) {
+          const targetW = (it.width * vp.scale) / dpr;
+          measureCtx.font = `${fsCss}px sans-serif`;
+          const mw = measureCtx.measureText(it.str).width;
+          if (mw > 0) span.style.transform = `scaleX(${targetW / mw})`;
+        }
+        layer.appendChild(span);
+      }
+    },
+    () => {
+      /* 文本获取失败则该页无选择能力, 静默 */
+    },
+  );
+}
+
 async function renderPage(n: number) {
   if (!doc || renderedPages.has(n)) return;
   renderedPages.add(n);
@@ -237,6 +280,7 @@ async function renderPage(n: number) {
     canvas.getContext("2d")?.drawImage(off, 0, 0);
     el.style.height = "auto";
     el.classList.add("done");
+    buildTextLayer(page, vp, canvas, el);
     highlightPage(n);
     // 之前发起的跳页目标渲染完成后校准一次滚动位置
     if (pendingJump.value === n) {
@@ -416,6 +460,7 @@ onUnmounted(() => {
       <div v-else ref="pagesRef" class="pages">
         <div v-for="n in pageCount" :key="n" class="pwrap" :data-page="n">
           <canvas />
+          <div class="text-layer"></div>
           <span class="plabel">{{ n }}</span>
         </div>
       </div>
@@ -516,6 +561,22 @@ onUnmounted(() => {
   border-radius: 0;
   pointer-events: none;
   box-sizing: border-box;
+}
+/* 不可见文本层: 仅用于鼠标拖选与复制, 不遮挡红色标线 */
+.pwrap :deep(.text-layer) {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.pwrap :deep(.text-layer span) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  line-height: 1;
+  transform-origin: 0 0;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .plabel {
   position: absolute;

@@ -1,5 +1,8 @@
+mod cache;
 mod commands;
 mod engine;
+#[cfg(windows)]
+mod ocr;
 mod pdfx;
 mod state;
 mod tree;
@@ -17,6 +20,7 @@ pub fn run() {
             commands::search_file,
             commands::start_search,
             commands::cancel_search,
+            commands::get_ocr_words,
             tree::list_tree_dir
         ])
         .run(tauri::generate_context!())

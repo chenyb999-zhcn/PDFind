@@ -43,10 +43,45 @@ const results = ref<FileSearchResult[]>([]);
 const prog = ref<ProgressEvent | null>(null);
 const done = ref<DoneEvent | null>(null);
 
-// 预览面板状态
+// 预览面板状态: 宽度按"比例"持久化, 窗口缩放时保持占比; null=默认 50%
 const previewPath = ref("");
 const previewPage = ref(1);
-const previewW = ref<number | null>(null); // 拖拽后的像素宽, null=默认 46%
+const PREVIEW_R_KEY = "preview.ratio";
+const previewRatio = ref<number | null>(null);
+
+function bodyWidth(): number {
+  return (
+    document.querySelector<HTMLElement>(".body")?.clientWidth ||
+    window.innerWidth
+  );
+}
+
+// 像素钳制: 预览至少 280px, 且给左侧搜索区保底约 480px
+function clampPreviewPx(w: number): number {
+  const bw = bodyWidth();
+  return Math.round(Math.min(Math.max(w, 280), Math.max(280, bw - 480)));
+}
+
+function loadPreviewW() {
+  try {
+    const saved = Number(localStorage.getItem(PREVIEW_R_KEY));
+    if (Number.isFinite(saved) && saved > 0.05 && saved < 1) {
+      previewRatio.value = saved;
+    }
+    localStorage.removeItem("preview.width"); // 清理旧版像素记录
+  } catch {
+    /* ignore */
+  }
+}
+
+function resetPreviewW() {
+  previewRatio.value = null;
+  try {
+    localStorage.removeItem(PREVIEW_R_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 // 目录树面板状态(显隐持久化)
 const treeVisible = ref(
@@ -58,6 +93,27 @@ const treeVisible = ref(
     }
   })(),
 );
+
+// 搜索关键字历史记录 (最多10条，本地持久化)
+const keywordHistory = ref<string[]>([]);
+onMounted(() => {
+  try {
+    const saved = localStorage.getItem("search.history");
+    keywordHistory.value = saved ? JSON.parse(saved) : [];
+  } catch {
+    keywordHistory.value = [];
+  }
+  loadPreviewW();
+});
+const showHistory = ref(false);
+const historyFocused = ref(false);
+const kwWrapRef = ref<HTMLDivElement | null>(null);
+
+// 加载状态：搜索开始2秒后显示
+const showLoading = ref(false);
+const searchStartTime = ref<number | null>(null);
+const loadingTimer = ref<number | null>(null);
+const ocrMode = ref(false); // 当前搜索是否为 OCR 模式(遮罩文案用)
 
 function toggleTree() {
   treeVisible.value = !treeVisible.value;
@@ -84,15 +140,22 @@ function startDrag(e: MouseEvent) {
   document.body.style.userSelect = "none";
   document.body.style.cursor = "col-resize";
   const onMove = (ev: MouseEvent) => {
-    const w = startW + (startX - ev.clientX);
-    const max = window.innerWidth - 480; // 左侧搜索区保底宽度
-    previewW.value = Math.round(Math.min(Math.max(w, 280), Math.max(280, max)));
+    const w = clampPreviewPx(startW + (startX - ev.clientX));
+    previewRatio.value = w / bodyWidth();
   };
   const onUp = () => {
     document.body.style.userSelect = "";
     document.body.style.cursor = "";
     window.removeEventListener("mousemove", onMove);
     window.removeEventListener("mouseup", onUp);
+    // 记住用户调整的宽度比例(窗口缩放后仍保持该占比)
+    try {
+      if (previewRatio.value != null) {
+        localStorage.setItem(PREVIEW_R_KEY, String(previewRatio.value));
+      }
+    } catch {
+      /* ignore */
+    }
   };
   window.addEventListener("mousemove", onMove);
   window.addEventListener("mouseup", onUp);
@@ -116,6 +179,7 @@ onMounted(async () => {
       done.value = e.payload;
       searching.value = false;
       prog.value = null;
+      clearLoadingTimer();
     }),
   );
   unlisteners.push(
@@ -123,6 +187,7 @@ onMounted(async () => {
       error.value = e.payload;
       searching.value = false;
       prog.value = null;
+      clearLoadingTimer();
     }),
   );
 });
@@ -139,6 +204,8 @@ async function browseFile() {
   if (typeof sel === "string") {
     filePath.value = sel;
     isDir.value = false;
+    // 选中文件后自动打开预览，显示第一页
+    openPreview(sel, 1);
   }
 }
 
@@ -150,7 +217,7 @@ async function browseDir() {
   }
 }
 
-async function search() {
+async function search(useOcr = false) {
   error.value = "";
   results.value = [];
   done.value = null;
@@ -159,29 +226,33 @@ async function search() {
     error.value = "请先选择文件/目录并输入搜索词";
     return;
   }
+  addToHistory(keyword.value);
   searching.value = true;
+  ocrMode.value = useOcr;
+  startLoadingTimer();
   try {
+    const args = {
+      path: filePath.value,
+      pattern: keyword.value,
+      caseInsensitive: caseInsensitive.value,
+      wholeWord: wholeWord.value,
+      useOcr,
+    };
     if (isDir.value) {
-      await invoke("start_search", {
-        path: filePath.value,
-        pattern: keyword.value,
-        caseInsensitive: caseInsensitive.value,
-        wholeWord: wholeWord.value,
-      });
-      // 结果经事件流到达, searching 在 search:done 复位
+      await invoke("start_search", args);
     } else {
-      const r = await invoke<FileSearchResult>("search_file", {
-        path: filePath.value,
-        pattern: keyword.value,
-        caseInsensitive: caseInsensitive.value,
-        wholeWord: wholeWord.value,
-      });
+      const r = await invoke<FileSearchResult>("search_file", args);
       results.value = [r];
       searching.value = false;
     }
   } catch (e) {
-    error.value = String(e);
+    // 用户主动取消: 静默复位(含按钮), 不作为错误提示
+    if (!String(e).includes("已取消")) {
+      error.value = String(e);
+    }
     searching.value = false;
+  } finally {
+    clearLoadingTimer();
   }
 }
 
@@ -190,6 +261,8 @@ async function cancel() {
     await invoke("cancel_search");
   } catch (e) {
     error.value = String(e);
+  } finally {
+    clearLoadingTimer();
   }
 }
 
@@ -201,6 +274,62 @@ function openPreview(path: string, page: number) {
 
 function basename(p: string): string {
   return p.split(/[\\/]/).pop() || p;
+}
+
+// 搜索关键字历史相关
+function addToHistory(kw: string) {
+  const trimmed = kw.trim();
+  if (!trimmed) return;
+  const idx = keywordHistory.value.indexOf(trimmed);
+  if (idx >= 0) keywordHistory.value.splice(idx, 1);
+  keywordHistory.value.unshift(trimmed);
+  if (keywordHistory.value.length > 10) keywordHistory.value.length = 10;
+  try {
+    localStorage.setItem("search.history", JSON.stringify(keywordHistory.value));
+  } catch {
+    /* ignore */
+  }
+}
+
+function selectHistoryItem(kw: string) {
+  keyword.value = kw;
+  showHistory.value = false;
+  historyFocused.value = false;
+  search();
+}
+
+function onKeywordFocus() {
+  historyFocused.value = true;
+  if (keywordHistory.value.length > 0) showHistory.value = true;
+}
+
+function onKeywordBlur() {
+  setTimeout(() => {
+    showHistory.value = false;
+    historyFocused.value = false;
+  }, 150);
+}
+
+function onHistoryMouseDown(e: MouseEvent) {
+  e.preventDefault(); // 防止 blur 先于 click 触发
+}
+
+// 加载状态控制
+function startLoadingTimer() {
+  searchStartTime.value = Date.now();
+  showLoading.value = false;
+  loadingTimer.value = window.setTimeout(() => {
+    if (searching.value) showLoading.value = true;
+  }, 2000);
+}
+
+function clearLoadingTimer() {
+  if (loadingTimer.value) {
+    clearTimeout(loadingTimer.value);
+    loadingTimer.value = null;
+  }
+  showLoading.value = false;
+  searchStartTime.value = null;
 }
 
 const totalHits = () => results.value.reduce((s, r) => s + r.hits.length, 0);
@@ -223,18 +352,39 @@ const totalHits = () => results.value.reduce((s, r) => s + r.hits.length, 0);
             class="path"
             v-model="filePath"
             :placeholder="isDir ? '目录路径…' : 'PDF 文件路径…'"
-            @keyup.enter="search"
+            @keyup.enter="search(false)"
           />
           <button @click="browseFile">选文件…</button>
           <button @click="browseDir">选目录…</button>
-          <input
-            class="kw"
-            v-model="keyword"
-            placeholder="搜索词"
-            @keyup.enter="search"
-          />
-          <button v-if="!searching" class="primary" @click="search">
+          <div class="kw-wrap" ref="kwWrapRef">
+            <input
+              class="kw"
+              v-model="keyword"
+              placeholder="搜索词"
+              @keyup.enter="search(false)"
+              @focus="onKeywordFocus"
+              @blur="onKeywordBlur"
+            />
+            <div
+              v-show="showHistory && keywordHistory.length > 0"
+              class="kw-history"
+              @mousedown="onHistoryMouseDown"
+            >
+              <div
+                v-for="(kw, i) in keywordHistory"
+                :key="i"
+                class="kw-history-item"
+                @click="selectHistoryItem(kw)"
+              >
+                {{ kw }}
+              </div>
+            </div>
+          </div>
+          <button v-if="!searching" class="primary" @click="search(false)">
             搜索
+          </button>
+          <button v-if="!searching" class="ocr" @click="search(true)">
+            OCR搜索
           </button>
           <button v-else class="danger" @click="cancel">取消</button>
         </div>
@@ -275,6 +425,10 @@ const totalHits = () => results.value.reduce((s, r) => s + r.hits.length, 0);
         </p>
 
         <section class="result">
+          <div v-show="showLoading" class="loading-overlay">
+            <div class="loading-spinner"></div>
+            <span>{{ ocrMode ? "正在搜索(含OCR)..." : "正在搜索..." }}</span>
+          </div>
           <header v-if="results.length" class="result-head">
             <span>命中 {{ results.length }} 个文件 · {{ totalHits() }} 行</span>
           </header>
@@ -324,14 +478,18 @@ const totalHits = () => results.value.reduce((s, r) => s + r.hits.length, 0);
         class="splitter"
         title="拖动调整宽度"
         @mousedown="startDrag"
-        @dblclick="previewW = null"
+        @dblclick="resetPreviewW"
       ></div>
 
       <Preview
         v-if="previewPath"
         :key="previewPath"
         class="preview-panel"
-        :style="previewW != null ? { flex: `0 0 ${previewW}px` } : undefined"
+        :style="
+          previewRatio != null
+            ? { flexBasis: previewRatio * 100 + '%' }
+            : undefined
+        "
         :path="previewPath"
         :page="previewPage"
         :keyword="keyword"
@@ -418,7 +576,9 @@ body {
   background: #1f6feb;
 }
 .preview-panel {
-  flex: 0 0 46%;
+  flex: 0 0 50%;
+  min-width: 280px;
+  max-width: calc(100% - 480px);
 }
 .toolbar {
   display: flex;
@@ -449,6 +609,11 @@ body {
 .toolbar button.primary {
   background: #1f6feb;
   border-color: #1f6feb;
+  color: #fff;
+}
+.toolbar button.ocr {
+  background: #1a7f37;
+  border-color: #1a7f37;
   color: #fff;
 }
 .toolbar button.danger {
@@ -507,6 +672,7 @@ body {
   background: #fff;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 .result-head {
   padding: 8px 12px;
@@ -587,5 +753,64 @@ body {
   background: #fff3c4;
   padding: 0 1px;
   border-radius: 2px;
+}
+
+/* 关键字历史下拉 */
+.kw-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 90px;
+}
+.kw-wrap input {
+  width: 100%;
+}
+.kw-history {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  z-index: 100;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.kw-history-item {
+  padding: 6px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kw-history-item:hover {
+  background: #f0f6ff;
+}
+
+/* 加载遮罩 */
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(255,255,255,0.9);
+  z-index: 10;
+  border-radius: 8px;
+}
+.loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid #d0d7de;
+  border-top-color: #1f6feb;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>
