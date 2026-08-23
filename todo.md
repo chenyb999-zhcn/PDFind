@@ -400,44 +400,56 @@ CI:   自动构建 mac dmg + linux x64/arm64 deb/rpm → 自动创建 Release �
 
 ---
 
-## 视频转 PDF（教材化）
+## 视频转 PDF（教材化）— 纯 Rust 方案 ✅ 已实施
 
 ### 功能概述
-将本地视频/音频（Bilibili 下载的 m4s/mp4/mp3 或任意音视频文件）转成带截图的 PDF 教材：Whisper 语音转文字 → 按内容时间点提取截图 → OCR 验证配图说明 → 术语修正 → 生成图文并茂的 PDF。
+将本地视频/音频转成带截图的 PDF 教材：提取音频 → ASR 转写（自动切片）→ 机械分章 → 场景取帧 → OCR 配图说明 → genpdf 排版生成图文 PDF。**全 Rust 实现，零 Python 依赖**。
 
-### 背景
-本机已有一套成熟的独立 Python 流水线（技能 `video-to-textbook`），包含 `scripts/transcribe.py`、`scripts/ocr_frames.py`、`scripts/fix_terms.py`、`scripts/make_pdf.py`。本次将其能力封装进 PDFind 应用，做成可视化入口。
+### 已确认决策（已落地）
+- **ASR 引擎**：默认 **Fun-ASR-Nano**（sherpa-onnx 官方 crate，LLM 级中文识别），Paraformer 可选；**UI 下拉框切换**
+- **运行方式**：纯 CPU（RTX 3060 Ti 实测 ~1.5x 实时；官方 RTF 0.16）
+- **工具链**：MSVC（已装 VS Build Tools 17.14 via winget 直连，rustup 切 stable-msvc）
+- **ffmpeg**：随包捆绑（开发时 msys2 mingw64）
+- **模型源**：默认 **ModelScope**（国内直连），GitHub 回退
+- **UI**：独立「视频转PDF」标签页 + 引擎下拉 + 分阶段进度 + 取消
+- **集成方式**：纯 Rust（sherpa-onnx 官方 crate 静态链接）
 
-### 集成方式（二选一，需决策）
-1. **Python 子进程桥接（推荐）**：PDFind 前端提供「选择视频 + 配置」UI，Rust 后端调用本机 Python 脚本流水线，进度经事件流推送。依赖：本机需装 Python 3.12 + faster-whisper + reportlab + easyocr + pymupdf + ffmpeg（mingw64 版）。
-2. **纯 Rust 重写**：用 whisper-rs / whisper.cpp 转写 + printpdf/reportlab 排版 + ffmpeg 取帧。体积大、工作量大，不推荐首版。
+### 关键实现（src-tauri/src/v2p/）
+- `asr.rs`：sherpa-onnx 封装；**Fun-ASR-Nano 12s/段自动切片**（max_total_len 512 限制，0.5s 重叠防切词）+ 句级时间戳 + 进度/取消回调
+- `ffmpeg.rs`：音频提取（16kHz mono wav）+ 场景取帧 + 关键帧
+- `ocr.rs`（win）：图片文件 OCR（复用 ocr.rs WinRT）
+- `chapters.rs`：机械分章（时间等分聚合 segments）
+- `pdf.rs`：genpdf 排版（封面/章节/图文，中文字体）
+- `commands.rs`：`v2p_check_env` / `v2p_transcribe` 命令，事件流 `v2p:progress` / `v2p:done`，SearchState 取消
 
-### 前端改动（App.vue + 新组件 VideoToPdf.vue）
-- 工具栏或独立标签页新增「视频转PDF」
-- 选择视频文件（plugin-dialog）
-- 配置项：Whisper 模型（medium/large-v3）、语言、术语替换列表
-- 进度显示：转写 → 取帧 → OCR → 排版 分阶段进度条
-- 输出 PDF 路径选择 + 完成提示
+### 已修复的底层 bug
+- **ocr.rs**：`Buffer` cast 到 `IMemoryBufferByteAccess` 错误 → 改用 `IBufferByteAccess`——**修复了 PDFind 一直存在的 OCR 静默失败问题**
 
-### 后端改动（src-tauri）
-- 新命令 `video_to_pdf`：参数（视频路径、模型、语言、术语、输出路径），逐阶段调用 Python 脚本
-- 事件流：`v2p:progress` / `v2p:done` / `v2p:error`，复用现有模式
-- 依赖：`std::process::Command` 调用 Python（无需新增 crate）；读取脚本目录（打包时随资源或指定本机路径）
-- 复用技能脚本：复制 `video-to-textbook/scripts/*.py` 到 `src-tauri/scripts/` 或外部资源目录
+### 依赖（Cargo.toml）
+```toml
+sherpa-onnx = "1.13"
+image = { version = "0.25", default-features = false, features = ["jpeg","png"] }
+genpdf = { version = "0.2", features = ["images"] }
+```
 
-### 明确不做（首版）
-- ❌ 内置 FFmpeg/模型下载器（沿用本机已装环境）
-- ❌ 在线字幕下载
-- ❌ 移动端
+### 测试通过
+- `v2p::asr`：FunASR 单段转写 ✓ / 45s 长音频切片转写（1252 字符/13 段）✓
+- `v2p::ocr`：真实帧图片 OCR（识别出"上证指数 4027.26"等）✓
+- `v2p::pdf`：真实 PDF 生成（中文正常嵌入）✓
+- `v2p::chapters`：分章逻辑 ✓
 
-### 验证
-- dev 模式：选一段本地 mp4 → 转写 → 取帧 → OCR → 生成 PDF，检查分章/配图/术语修正
-- 中文渲染（msyh.ttc 字体）、GPU 加速（cuda float16）确认
-- 取消/失败处理
+### 模型资源
+- Fun-ASR-Nano int8: `sherpa-onnx-funasr-nano-int8-2025-12-30`（~950MB, encoder+llm+embedding+Qwen3-0.6B tokenizer）
+- Paraformer: `sherpa-onnx-paraformer-zh-2024-03-09`（~230MB, 待下载）
+- 开发缓存：`src-tauri/dev-models/`（gitignore）
+- 打包后：模型由用户下载至配置目录（后续实现自动下载）
 
-### 决策点
-- Python 桥接 vs Rust 重写（建议桥接）
-- 脚本随包分发还是引用本机技能目录
+### 剩余 TODO
+- [ ] 模型自动下载（打包后首次使用从 ModelScope 拉取，带进度）
+- [ ] 取帧+OCR+分章整合进完整 `video_to_pdf` 命令（目前转写命令已通）
+- [ ] 输出路径选择 + 生成 PDF 的完整 UI 流程
+- [ ] 正式捆绑 ffmpeg.exe + Noto Sans SC 字体到发布包
+- [ ] LLM 智能分章（预留接口）
 
 ---
 

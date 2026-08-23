@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import Preview from "./components/Preview.vue";
 import DirTree from "./components/DirTree.vue";
+import VideoToPdf from "./components/VideoToPdf.vue";
 
 interface Hit {
   page: number;
@@ -93,6 +94,9 @@ const treeVisible = ref(
     }
   })(),
 );
+
+// 顶部标签页: "search" | "v2p"
+const activeTab = ref<"search" | "v2p">("search");
 
 // 搜索关键字历史记录 (最多10条，本地持久化)
 const keywordHistory = ref<string[]>([]);
@@ -337,7 +341,26 @@ const totalHits = () => results.value.reduce((s, r) => s + r.hits.length, 0);
 
 <template>
   <main class="wrap">
-    <div class="body">
+    <div class="tabs">
+      <button
+        class="tab"
+        :class="{ on: activeTab === 'search' }"
+        @click="activeTab = 'search'"
+      >
+        搜索
+      </button>
+      <button
+        class="tab"
+        :class="{ on: activeTab === 'v2p' }"
+        @click="activeTab = 'v2p'"
+      >
+        视频转 PDF
+      </button>
+    </div>
+    <div v-if="activeTab === 'v2p'" class="v2p-body">
+      <VideoToPdf />
+    </div>
+    <div v-else class="body">
       <DirTree v-show="treeVisible" class="tree-panel" @pick="onTreePick" />
       <div
         class="tree-toggle"
@@ -520,11 +543,43 @@ body {
 .wrap {
   padding: 16px;
   height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #d0d7de;
+  padding-bottom: 6px;
+}
+.tab {
+  padding: 5px 16px;
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  cursor: pointer;
+  color: #57606a;
+}
+.tab.on {
+  background: #fff;
+  border-color: #d0d7de;
+  border-bottom-color: #fff;
+  color: #1f2328;
+  font-weight: 600;
+}
+.v2p-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
 }
 .body {
   display: flex;
   gap: 0;
-  height: 100%;
+  flex: 1;
   min-height: 0;
 }
 .left {

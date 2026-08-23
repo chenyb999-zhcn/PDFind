@@ -7,7 +7,6 @@ use windows::core::HSTRING;
 use windows::Globalization::Language;
 use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
 use windows::Media::Ocr::OcrEngine;
-use windows::Storage::Streams::Buffer;
 
 static ENGINE: OnceLock<Option<OcrEngine>> = OnceLock::new();
 
@@ -134,7 +133,8 @@ pub fn recognize_bgra(pixels: &[u8], width: u32, height: u32) -> Result<OcrPageR
 
 /// 像素缓冲 -> SoftwareBitmap: WinRT IBuffer 共享内存路径
 unsafe fn bitmap_from_bgra(buf: &[u8], w: u32, h: u32) -> Result<SoftwareBitmap, String> {
-    use windows::Win32::System::WinRT::IMemoryBufferByteAccess;
+    use windows::Storage::Streams::Buffer;
+    use windows::Win32::System::WinRT::IBufferByteAccess;
     use windows::core::Interface;
 
     let mut buffer =
@@ -143,17 +143,12 @@ unsafe fn bitmap_from_bgra(buf: &[u8], w: u32, h: u32) -> Result<SoftwareBitmap,
         .SetLength(buf.len() as u32)
         .map_err(|e| format!("Buffer 长度设置失败: {e}"))?;
     {
-        let access: IMemoryBufferByteAccess = buffer
+        let access: IBufferByteAccess = buffer
             .cast()
             .map_err(|e| format!("Buffer 访问接口失败: {e}"))?;
-        let mut ptr: *mut u8 = std::ptr::null_mut();
-        let mut capacity: u32 = 0;
-        access
-            .GetBuffer(&mut ptr, &mut capacity)
+        let ptr = access
+            .Buffer()
             .map_err(|e| format!("Buffer 数据获取失败: {e}"))?;
-        if (capacity as usize) < buf.len() {
-            return Err("Buffer 容量不足".into());
-        }
         std::ptr::copy_nonoverlapping(buf.as_ptr(), ptr, buf.len());
     }
     SoftwareBitmap::CreateCopyFromBuffer(

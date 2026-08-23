@@ -1,6 +1,6 @@
 [package]
 name = "pdfind"
-version = "0.0.2"
+version = "0.2.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -26,6 +26,9 @@ pdfium-render = { version = "0.9", features = ["thread_safe"] }
 regex = "1"
 ignore = "0.4"
 rayon = "1"
+sherpa-onnx = "1.13"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+genpdf = { version = "0.2", features = ["images"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

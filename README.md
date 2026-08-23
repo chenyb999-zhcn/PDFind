@@ -11,6 +11,7 @@ PDF 全文搜索桌面工具——在单个 PDF 文件或整个目录（含子�
 - **匹配选项**：忽略大小写、整词匹配（前后端使用一致的正则规则）
 - **内置预览**：基于 pdf.js 的渲染面板，懒加载 + 视口触发渲染 + 离屏双缓冲，高分屏清晰显示
 - **关键词标线**：预览页面中以红色下划线标注命中位置，按逐字符测宽精确定位
+- **视频转 PDF**：将本地视频/音频转成带截图的 PDF 教材——Fun-ASR-Nano 离线转写（自动切片）、场景取帧、OCR 配图、genpdf 排版，纯 Rust 本地处理
 - **进度与取消**：实时进度条（已扫描/命中数/当前文件），随时取消任务
 - **可拖拽分栏**：搜索结果与预览面板宽度可自由调整
 
@@ -21,6 +22,8 @@ PDF 全文搜索桌面工具——在单个 PDF 文件或整个目录（含子�
 | 桌面框架 | [Tauri 2](https://tauri.app/) |
 | 前端 | Vue 3 + TypeScript + Vite |
 | 文本提取（后端） | [pdfium-render](https://crates.io/crates/pdfium-render)（绑定 pdfium 动态库） |
+| 视频转写（ASR） | [sherpa-onnx](https://crates.io/crates/sherpa-onnx)（Fun-ASR-Nano / Paraformer，CPU） |
+| PDF 排版 | [genpdf](https://crates.io/crates/genpdf) |
 | 预览渲染（前端） | [pdfjs-dist](https://www.npmjs.com/package/pdfjs-dist) |
 | 目录遍历 | [ignore](https://crates.io/crates/ignore)（尊重 .gitignore） |
 | 匹配引擎 | Rust [regex](https://crates.io/crates/regex) |
@@ -89,3 +92,14 @@ GitHub Actions 自动构建 macOS 与 Linux 安装包（推送 `v*` 标签触发
 3. 点击「搜索」或回车开始；目录搜索过程中可随时「取消」
 4. 点击命中行 → 右侧打开预览并跳转到对应页面，关键词自动高亮
 5. 拖动中间分隔条可调整预览宽度，双击分隔条恢复默认
+
+### 视频转 PDF
+
+顶部切换到「视频转 PDF」标签页：
+
+1. 选择本地视频/音频文件
+2. 选择 ASR 引擎（默认 Fun-ASR-Nano；Paraformer 为轻量备选）
+3. 点击「开始转写」——CPU 离线处理，进度条实时显示；可随时取消
+4. 首次使用需联网下载模型（~950MB，ModelScope 源，国内直连）
+
+> 转写速度约 1.5x 实时（RTX 3060 Ti CPU 实测），1 小时视频约需 1.5-2 小时。开发者模式下模型缓存于 `src-tauri/dev-models/`。

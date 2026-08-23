@@ -6,6 +6,7 @@ mod ocr;
 mod pdfx;
 mod state;
 mod tree;
+mod v2p;
 mod walker;
 
 use state::SearchState;
@@ -21,7 +22,9 @@ pub fn run() {
             commands::start_search,
             commands::cancel_search,
             commands::get_ocr_words,
-            tree::list_tree_dir
+            tree::list_tree_dir,
+            v2p::commands::v2p_check_env,
+            v2p::commands::v2p_transcribe
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
