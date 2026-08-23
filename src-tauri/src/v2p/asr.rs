@@ -85,14 +85,14 @@ impl Asr {
 
     // 转写 Wave 对象 (含切片)
     pub fn transcribe_wave(&self, wave: &Wave) -> Result<Vec<AsrSegment>, String> {
-        self.transcribe_wave_with_progress(wave, &mut |_, _| true)
+        self.transcribe_wave_with_progress(wave, &mut |_, _, _| true)
     }
 
-    // 转写 Wave (含切片), 每段完成回调 (done, total_chunks) -> bool (false=取消)
+    // 转写 Wave (含切片), 每段完成回调 (done, total_chunks, chunk_text) -> bool (false=取消)
     pub fn transcribe_wave_with_progress(
         &self,
         wave: &Wave,
-        on_chunk: &mut dyn FnMut(usize, usize) -> bool,
+        on_chunk: &mut dyn FnMut(usize, usize, &str) -> bool,
     ) -> Result<Vec<AsrSegment>, String> {
         let sample_rate = wave.sample_rate() as usize;
         let samples = wave.samples();
@@ -113,13 +113,15 @@ impl Asr {
             let end = (pos + chunk_len).min(total);
             let chunk = &samples[pos..end];
             let segments = self.recognize_chunk(chunk, sample_rate)?;
+            let mut chunk_text = String::new();
             for mut seg in segments {
                 seg.start += global_offset;
                 seg.end += global_offset;
+                chunk_text.push_str(&seg.text);
                 all.push(seg);
             }
             chunk_idx += 1;
-            if !on_chunk(chunk_idx, total_chunks) {
+            if !on_chunk(chunk_idx, total_chunks, &chunk_text) {
                 // 取消
                 break;
             }

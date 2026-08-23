@@ -2,7 +2,11 @@
 pub mod asr;
 pub mod chapters;
 pub mod commands;
+pub mod device;
+pub mod download;
 pub mod ffmpeg;
+pub mod llamacpp;
+pub mod models;
 #[cfg(windows)]
 pub mod ocr;
 pub mod pdf;

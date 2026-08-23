@@ -22,7 +22,7 @@ PDF 全文搜索桌面工具——在单个 PDF 文件或整个目录（含子�
 | 桌面框架 | [Tauri 2](https://tauri.app/) |
 | 前端 | Vue 3 + TypeScript + Vite |
 | 文本提取（后端） | [pdfium-render](https://crates.io/crates/pdfium-render)（绑定 pdfium 动态库） |
-| 视频转写（ASR） | [sherpa-onnx](https://crates.io/crates/sherpa-onnx)（Fun-ASR-Nano / Paraformer，CPU） |
+| 视频转写（ASR） | [sherpa-onnx](https://crates.io/crates/sherpa-onnx) + [llama.cpp](https://github.com/ggml-org/llama.cpp)（Fun-ASR-Nano / SenseVoice / Paraformer / Whisper / FireRedASR，CPU + CUDA） |
 | PDF 排版 | [genpdf](https://crates.io/crates/genpdf) |
 | 预览渲染（前端） | [pdfjs-dist](https://www.npmjs.com/package/pdfjs-dist) |
 | 目录遍历 | [ignore](https://crates.io/crates/ignore)（尊重 .gitignore） |
@@ -98,8 +98,15 @@ GitHub Actions 自动构建 macOS 与 Linux 安装包（推送 `v*` 标签触发
 顶部切换到「视频转 PDF」标签页：
 
 1. 选择本地视频/音频文件
-2. 选择 ASR 引擎（默认 Fun-ASR-Nano；Paraformer 为轻量备选）
-3. 点击「开始转写」——CPU 离线处理，进度条实时显示；可随时取消
-4. 首次使用需联网下载模型（~950MB，ModelScope 源，国内直连）
+2. 选择 ASR 模型（下拉框显示下载状态）：
+   - **Fun-ASR-Nano**（llama.cpp）— 高质量，中文/方言/英日，**支持 GPU(CUDA) 加速**
+   - **SenseVoice-Small**（llama.cpp）— 轻量快速，**支持 GPU(CUDA) 加速**
+   - **Paraformer**（llama.cpp）— 均衡
+   - **Whisper / FireRedASR2**（sherpa-onnx）— 多语言/中文进阶
+3. 选择计算设备（自动检测 / CPU / GPU）；有 NVIDIA GPU 且模型支持时默认 GPU
+4. 未下载的模型点击「下载」按钮（ModelScope 源，国内直连，进度显示）
+5. 点击「开始转写」——本地离线处理，转写日志实时滚动显示；可随时取消
 
-> 转写速度约 1.5x 实时（RTX 3060 Ti CPU 实测），1 小时视频约需 1.5-2 小时。开发者模式下模型缓存于 `src-tauri/dev-models/`。
+> 转写为本地处理。SenseVoice 与 Fun-ASR-Nano 在 llama.cpp 下支持 CUDA（RTX 3060 Ti 实测 Nano 45s 音频 3.2s，约 14x 实时）；Paraformer 仅 CPU。模型与运行时缓存于 `src-tauri/dev-models/`（开发模式）；CUDA 运行时（cublas64_13.dll 等）随 `bin-cuda/` 一并提供。
+
+6. 转写完成后可「生成 PDF」：自动截取视频场景图，将转写内容按时间戳分章排版；勾选「本地 LLM 整理」可用本地大模型（Qwen3-1.7B / Qwen3.8-2B / Qwen3.8-4B，可下拉选择）把转写稿整理成结构化章节，生成带章节标题与要点的教材式 PDF。

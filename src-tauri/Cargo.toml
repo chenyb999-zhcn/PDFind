@@ -1,6 +1,6 @@
 [package]
 name = "pdfind"
-version = "0.2.0"
+version = "0.3.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -29,6 +29,10 @@ rayon = "1"
 sherpa-onnx = "1.13"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 genpdf = { version = "0.2", features = ["images"] }
+ureq = "2"
+tar = "0.4"
+bzip2 = "0.4"
+flate2 = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
