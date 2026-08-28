@@ -1,6 +1,6 @@
 // 视频转 PDF: tauri 命令 (模型管理 + 设备 + 转写 + PDF)
 use crate::state::SearchState;
-use crate::v2p::{asr, device, download, ffmpeg, llamacpp, models, pdf};
+use crate::v2p::{asr, device, download, ffmpeg, llamacpp, models, organizer, pdf};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,8 +58,11 @@ pub struct V2pEnv {
 pub struct OrganizerInfo {
     pub id: String,
     pub name: String,
-    pub downloaded: bool,
-    pub size_mb: u64,
+    pub base_url: String,
+    pub default_model: String,
+    pub needs_model: bool,
+    pub has_key: bool,   // 是否已配置 API Key
+    pub models: Vec<String>, // 预置模型下拉列表
 }
 
 #[derive(Serialize, Clone)]
@@ -68,9 +71,9 @@ pub struct V2pUpdateInfo {
     pub new_version: u64,
 }
 
-// 检查 v2p 环境: ffmpeg / 模型清单(含下载状态) / 设备
+// 检查 v2p 环境: ffmpeg / 模型清单(含下载状态) / 设备 / 整理服务商
 #[tauri::command]
-pub fn v2p_check_env() -> V2pEnv {
+pub fn v2p_check_env(app: tauri::AppHandle) -> V2pEnv {
     let catalog = models::builtin_catalog();
     let device_info = device::detect_devices();
     let models_list = catalog
@@ -85,21 +88,26 @@ pub fn v2p_check_env() -> V2pEnv {
             downloaded: models::is_downloaded(m),
         })
         .collect();
+    let oc = organizer::load(&app);
+    let organizers = models::organizer_providers()
+        .iter()
+        .map(|p| OrganizerInfo {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            base_url: p.base_url.clone(),
+            default_model: p.default_model.clone(),
+            needs_model: p.needs_model,
+            has_key: oc.keys.contains_key(&p.id),
+            models: p.models.clone(),
+        })
+        .collect();
     V2pEnv {
         ffmpeg: ffmpeg::ffmpeg_path().is_some(),
         models: models_list,
         device: device_info,
         catalog_version: catalog.version,
         has_update: false,
-        organizers: models::organizer_models()
-            .iter()
-            .map(|m| OrganizerInfo {
-                id: m.id.clone(),
-                name: m.name.clone(),
-                downloaded: models::organizer_downloaded(m),
-                size_mb: m.file.size_mb,
-            })
-            .collect(),
+        organizers,
     }
 }
 
@@ -134,36 +142,69 @@ pub async fn v2p_download_model(
     })
 }
 
-// 下载 PDF 整理用 LLM 模型
+// 读取整理服务商配置(含 API Key, 本机应用)
 #[tauri::command]
-pub async fn v2p_download_organizer(
+pub fn v2p_get_organizer_config(app: AppHandle) -> organizer::OrganizerConfig {
+    organizer::load(&app)
+}
+
+// 保存整理服务商配置
+#[tauri::command]
+pub fn v2p_set_organizer_config(
     app: AppHandle,
-    organizer_id: String,
+    config: organizer::OrganizerConfig,
 ) -> Result<(), String> {
-    let om = models::organizer_models()
-        .into_iter()
-        .find(|m| m.id == organizer_id)
-        .ok_or_else(|| format!("未知整理模型: {organizer_id}"))?;
-    let dir = models::organizer_dir().join(&om.id);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
-    let dest = models::organizer_path(&om);
-    if dest.exists() {
-        return Ok(());
-    }
-    // 复用下载逻辑: 构造临时 AsrModel
-    let tmp = models::AsrModel {
-        id: om.id.clone(),
-        name: om.name.clone(),
-        runtime: "llamacpp".into(),
-        cli: String::new(),
-        gpu: false,
-        needs_vad: false,
-        extract_tar: false,
-        files: vec![om.file.clone()],
+    organizer::save(&app, &config)
+}
+
+// 动态拉取服务商的模型列表 (GET {base_url}/models, OpenAI 兼容)
+#[tauri::command]
+pub fn v2p_list_organizer_models(
+    app: AppHandle,
+    provider_id: String,
+) -> Result<Vec<String>, String> {
+    let cfg = organizer::load(&app);
+    let (base_url, api_key) = if provider_id == "custom" {
+        let c = &cfg.custom;
+        if c.base_url.is_empty() || c.api_key.is_empty() {
+            return Err("自定义服务商需填 Base URL 和 API Key".into());
+        }
+        (c.base_url.clone(), c.api_key.clone())
+    } else {
+        let p = models::organizer_providers()
+            .into_iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("未知服务商: {provider_id}"))?;
+        let key = cfg.keys.get(&provider_id).cloned().unwrap_or_default();
+        if key.is_empty() {
+            return Err(format!("{} 的 API Key 未配置", p.name));
+        }
+        (p.base_url.clone(), key)
     };
-    download::download_model(&app, &tmp, &mut |p| {
-        let _ = app.emit("v2p:dl", &p);
-    })
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(20))
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .call()
+        .map_err(|e| format!("获取模型列表失败: {e}"))?;
+    let status = resp.status();
+    if status != 200 {
+        let t = resp.into_string().unwrap_or_default();
+        return Err(format!("获取模型列表返回 HTTP {status}: {}", &t.chars().take(200).collect::<String>()));
+    }
+    let json: serde_json::Value = resp.into_json().map_err(|e| format!("解析失败: {e}"))?;
+    let list: Vec<String> = json["data"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m["id"].as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if list.is_empty() {
+        return Err("模型列表为空".into());
+    }
+    Ok(list)
 }
 
 // 转写命令: 按模型运行时路由 (llamacpp 子进程 / sherpa-onnx 库)
@@ -393,73 +434,77 @@ fn cn_font() -> Option<String> {
     cands.iter().find(|p| std::path::Path::new(p).exists()).map(|s| s.to_string())
 }
 
-// 本地 LLM 整理: 用 nano 的 Qwen3 模型把转写稿整理为结构化章节 (返回 markdown 文本)
+// 在线大模型整理: 调用 OpenAI 兼容 chat/completions, 把转写稿整理为结构化章节
 fn organize_with_llm(
     app: &AppHandle,
     transcript: &str,
     lang: &str,
-    organizer_id: &str,
-    cancel: &Arc<AtomicBool>,
+    provider_id: &str,
 ) -> Result<String, String> {
-    let om = models::organizer_models()
-        .into_iter()
-        .find(|m| m.id == organizer_id)
-        .ok_or_else(|| format!("未知整理模型: {organizer_id}"))?;
-    let model_path = models::organizer_path(&om);
-    if !model_path.exists() {
-        return Err(format!("整理模型 {} 未下载", om.name));
-    }
-    // GPU 可用时用 CUDA 版 CLI (bin-cuda), 否则 CPU 版
-    let use_cuda = device::detect_devices().has_nvidia_gpu;
-    let cli = llamacpp::LlamaCli::find("llama-funasr-cli", use_cuda)
-        .ok_or("未找到 llama-funasr-cli 可执行文件")?;
-
-    let mut cmd = std::process::Command::new(cli.bin_path());
-    cmd.arg("-m").arg(&model_path);
-    cmd.arg("--summarize");
-    if !lang.is_empty() {
-        cmd.arg("--lang").arg(lang);
-    }
-    cmd.stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("启动整理失败: {e}"))?;
-    {
-        use std::io::Write;
-        let mut si = child.stdin.take().ok_or("无法写入 stdin")?;
-        let _ = si.write_all(transcript.as_bytes());
-    }
-    let stdout = child.stdout.take().ok_or("无法读取整理输出")?;
-    let stderr = child.stderr.take().ok_or("无法读取整理错误")?;
-
-    // 读 stdout/stderr 到字符串 (超时 600s, 长文本 CPU 整理可能较慢)
-    let read_all = |mut r: std::process::ChildStdout| -> String {
-        use std::io::Read;
-        let mut s = String::new();
-        let _ = r.read_to_string(&mut s);
-        s
+    let cfg = organizer::load(app);
+    let (base_url, model, api_key) = if provider_id == "custom" {
+        let c = &cfg.custom;
+        if c.base_url.is_empty() || c.model.is_empty() || c.api_key.is_empty() {
+            return Err("自定义服务商需填 Base URL / Model / API Key".into());
+        }
+        (c.base_url.clone(), c.model.clone(), c.api_key.clone())
+    } else {
+        let p = models::organizer_providers()
+            .into_iter()
+            .find(|p| p.id == provider_id)
+            .ok_or_else(|| format!("未知服务商: {provider_id}"))?;
+        let key = cfg.keys.get(provider_id).cloned().unwrap_or_default();
+        if key.is_empty() {
+            return Err(format!("{} 的 API Key 未配置", p.name));
+        }
+        // model: 用户覆盖优先, 否则默认; 豆包必须填
+        let model = cfg
+            .models
+            .get(provider_id)
+            .cloned()
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| p.default_model.clone());
+        if model.is_empty() {
+            return Err(format!("{} 需填写 Model(Endpoint ID)", p.name));
+        }
+        (p.base_url.clone(), model, key)
     };
-    let read_err = |mut r: std::process::ChildStderr| -> String {
-        use std::io::Read;
-        let mut s = String::new();
-        let _ = r.read_to_string(&mut s);
-        s
-    };
-    let (out, err) = std::thread::scope(|s| {
-        let o = s.spawn(move || read_all(stdout));
-        let e = s.spawn(move || read_err(stderr));
-        let mut ch = child;
-        let _ = ch.wait();
-        (o.join().unwrap_or_default(), e.join().unwrap_or_default())
+    if base_url.is_empty() {
+        return Err("Base URL 为空".into());
+    }
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+    // 构造请求体
+    let sys = "你是一个文档整理助手。请把下面的语音转写稿整理成条理清晰的结构化内容：按主题分成若干章节，每章节给出标题和要点列表。直接输出整理结果，不要多余解释。";
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": sys},
+            {"role": "user", "content": transcript}
+        ],
+        "temperature": 0.6,
+        "max_tokens": 4096
     });
-    if cancel.load(Ordering::SeqCst) {
-        return Err("已取消".into());
+
+    emit_log(app, &format!("调用 {} 在线整理… ({model})", provider_id));
+    let resp = ureq::post(&url)
+        .timeout(std::time::Duration::from_secs(300))
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .set("Content-Type", "application/json")
+        .send_json(body)
+        .map_err(|e| format!("在线整理请求失败: {e}"))?;
+    let status = resp.status();
+    if status != 200 {
+        let body_txt = resp.into_string().unwrap_or_default();
+        return Err(format!("在线整理返回 HTTP {status}: {}", &body_txt.chars().take(300).collect::<String>()));
     }
-    let text = out.trim().to_string();
+    let json: serde_json::Value = resp.into_json().map_err(|e| format!("解析响应失败: {e}"))?;
+    let text = json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or("在线整理响应无内容")?;
+    let text = text.trim().to_string();
     if text.is_empty() {
-        // 上报 stderr 尾部, 便于定位
-        let tail: String = err.chars().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
-        let _ = emit_log(app, &format!("整理失败 (stderr): {}", tail));
         return Err("整理无输出".into());
     }
     Ok(text)
@@ -474,8 +519,8 @@ pub async fn v2p_generate_pdf(
     lang: String,
     transcript: String,     // 原始转写全文(用于 LLM 整理)
     segments: Vec<SegmentInfo>, // 带时间戳的分段(用于按时间分章)
-    organize: bool,         // 是否用本地 LLM 整理成章节
-    organizer_id: String,   // 选择的整理模型 id
+    organize: bool,         // 是否用在线大模型整理成章节
+    organizer_id: String,   // 选择的整理服务商 id
 ) -> Result<(), String> {
     let font = cn_font().ok_or("未找到系统中文字体")?;
 
@@ -491,10 +536,10 @@ pub async fn v2p_generate_pdf(
     .map_err(|e| e)?;
     emit_log(&app, &format!("截图 {} 张", frames.len()));
 
-    // 本地 LLM 整理
+    // 在线大模型整理
     let mut chapters = if organize {
-        emit_log(&app, "本地 LLM 整理转写稿…");
-        match organize_with_llm(&app, &transcript, &lang, &organizer_id, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))) {
+        emit_log(&app, "在线大模型整理转写稿…");
+        match organize_with_llm(&app, &transcript, &lang, &organizer_id) {
             Ok(md) => {
                 emit_log(&app, "LLM 整理完成");
                 md.lines()

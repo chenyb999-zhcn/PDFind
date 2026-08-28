@@ -234,60 +234,113 @@ pub fn is_downloaded(model: &AsrModel) -> bool {
     })
 }
 
-// ======================= PDF 整理用 LLM 模型 (与 ASR 模型分离) =======================
-// 存于 <models_dir>/organizers/<id>/
+// ======================= PDF 整理用在线大模型服务商 (OpenAI 兼容协议) =======================
+// API Key 存于后端配置文件, 不随模型下载
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct OrganizerModel {
+pub struct OrganizerProvider {
     pub id: String,
     pub name: String,
-    pub file: ModelFile, // 单个 gguf
+    pub base_url: String,          // chat/completions 的 Base URL(不含结尾 /chat/completions)
+    pub default_model: String,
+    pub needs_model: bool,         // 是否必须用户填 model(如豆包 endpoint id)
+    pub models: Vec<String>,       // 预置模型下拉列表
 }
 
-pub fn organizer_dir() -> std::path::PathBuf {
-    model_dir().join("organizers")
-}
-
-pub fn organizer_models() -> Vec<OrganizerModel> {
+pub fn organizer_providers() -> Vec<OrganizerProvider> {
     vec![
-        OrganizerModel {
-            id: "qwen3-1.7b".into(),
-            name: "Qwen3-1.7B (Q8_0, 1.8GB)".into(),
-            file: ModelFile {
-                name: "Qwen3-1.7B-Q8_0.gguf".into(),
-                size_mb: 1834,
-                url_ms: "https://modelscope.cn/models/Qwen/Qwen3-1.7B-GGUF/resolve/master/Qwen3-1.7B-Q8_0.gguf".into(),
-                url_hf: "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q8_0.gguf".into(),
-            },
+        OrganizerProvider {
+            id: "deepseek".into(),
+            name: "DeepSeek".into(),
+            base_url: "https://api.deepseek.com/v1".into(),
+            default_model: "deepseek-chat".into(),
+            needs_model: false,
+            models: vec![
+                "deepseek-chat".into(),
+                "deepseek-reasoner".into(),
+                "deepseek-v4-flash".into(),
+                "deepseek-v4-pro".into(),
+            ],
         },
-        OrganizerModel {
-            id: "qwen3.8-2b".into(),
-            name: "Qwen3.8-2B (Q4_K_M, 1.3GB)".into(),
-            file: ModelFile {
-                name: "Qwen3.8-2B-Q4_K_M.gguf".into(),
-                size_mb: 1312,
-                url_ms: "https://modelscope.cn/models/empero-ai/Qwen3.8-2B-Distill-GGUF/resolve/master/Qwen3.8-2B-Q4_K_M.gguf".into(),
-                url_hf: "https://huggingface.co/empero-ai/Qwen3.8-2B-Distill-GGUF/resolve/main/Qwen3.8-2B-Q4_K_M.gguf".into(),
-            },
+        OrganizerProvider {
+            id: "glm".into(),
+            name: "智谱 GLM".into(),
+            base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
+            default_model: "glm-4.7-flash".into(),
+            needs_model: false,
+            models: vec![
+                "glm-5.3".into(),
+                "glm-5.2".into(),
+                "glm-5.1".into(),
+                "glm-5".into(),
+                "glm-5-turbo".into(),
+                "glm-4.7".into(),
+                "glm-4.7-flash".into(),
+                "glm-4.6".into(),
+                "glm-4-flash-250414".into(),
+            ],
         },
-        OrganizerModel {
-            id: "qwen3.8-4b".into(),
-            name: "Qwen3.8-4B (Q4_K_M, 2.6GB)".into(),
-            file: ModelFile {
-                name: "Qwen3.8-4B-Q4_K_M.gguf".into(),
-                size_mb: 2783,
-                url_ms: "https://modelscope.cn/models/empero-ai/Qwen3.8-4B-Distill-GGUF/resolve/master/Qwen3.8-4B-Q4_K_M.gguf".into(),
-                url_hf: "https://huggingface.co/empero-ai/Qwen3.8-4B-Distill-GGUF/resolve/main/Qwen3.8-4B-Q4_K_M.gguf".into(),
-            },
+        OrganizerProvider {
+            id: "kimi".into(),
+            name: "Kimi 月之暗面".into(),
+            base_url: "https://api.moonshot.cn/v1".into(),
+            default_model: "kimi-latest".into(),
+            needs_model: false,
+            models: vec![
+                "kimi-latest".into(),
+                "kimi-k2.6".into(),
+                "kimi-k2.5".into(),
+                "moonshot-v1-128k".into(),
+                "moonshot-v1-32k".into(),
+            ],
+        },
+        OrganizerProvider {
+            id: "doubao".into(),
+            name: "豆包 火山方舟".into(),
+            base_url: "https://ark.cn-beijing.volces.com/api/v3".into(),
+            default_model: String::new(), // 需用户填 Endpoint ID 或模型 ID
+            needs_model: true,
+            models: vec![
+                "doubao-seed-2-1-pro-260628".into(),
+                "doubao-seed-2-0-code-preview-260215".into(),
+            ],
+        },
+        OrganizerProvider {
+            id: "qwen".into(),
+            name: "通义千问".into(),
+            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".into(),
+            default_model: "qwen-plus".into(),
+            needs_model: false,
+            models: vec![
+                "qwen-plus".into(),
+                "qwen-max".into(),
+                "qwen-turbo".into(),
+                "qwen-long".into(),
+                "qwen3-max".into(),
+            ],
+        },
+        OrganizerProvider {
+            id: "hunyuan".into(),
+            name: "腾讯元宝(混元)".into(),
+            base_url: "https://api.hunyuan.cloud.tencent.com/v1".into(),
+            default_model: "hunyuan-turbos-latest".into(),
+            needs_model: false,
+            models: vec![
+                "hunyuan-turbos-latest".into(),
+                "hunyuan-t1-latest".into(),
+                "hunyuan-pro".into(),
+                "hunyuan-standard".into(),
+                "hunyuan-lite".into(),
+            ],
+        },
+        OrganizerProvider {
+            id: "custom".into(),
+            name: "自定义".into(),
+            base_url: String::new(),
+            default_model: String::new(),
+            needs_model: true,
+            models: vec![],
         },
     ]
-}
-
-pub fn organizer_path(m: &OrganizerModel) -> std::path::PathBuf {
-    organizer_dir().join(&m.id).join(&m.file.name)
-}
-
-pub fn organizer_downloaded(m: &OrganizerModel) -> bool {
-    organizer_path(m).exists()
 }
 
 #[cfg(test)]

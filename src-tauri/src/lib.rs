@@ -26,7 +26,9 @@ pub fn run() {
             v2p::commands::v2p_check_env,
             v2p::commands::v2p_check_update,
             v2p::commands::v2p_download_model,
-            v2p::commands::v2p_download_organizer,
+            v2p::commands::v2p_get_organizer_config,
+            v2p::commands::v2p_set_organizer_config,
+            v2p::commands::v2p_list_organizer_models,
             v2p::commands::v2p_transcribe,
             v2p::commands::v2p_generate_pdf
         ])

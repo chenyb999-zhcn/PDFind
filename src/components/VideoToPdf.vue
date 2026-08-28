@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -28,8 +28,16 @@ interface V2pEnv {
 interface OrganizerInfo {
   id: string;
   name: string;
-  downloaded: boolean;
-  size_mb: number;
+  base_url: string;
+  default_model: string;
+  needs_model: boolean;
+  has_key: boolean;
+  models: string[];
+}
+interface OrganizerConfig {
+  keys: Record<string, string>;
+  models: Record<string, string>;
+  custom: { base_url: string; model: string; api_key: string };
 }
 interface V2pProgress {
   stage: string;
@@ -74,7 +82,15 @@ const generatingPdf = ref(false);
 const pdfMsg = ref("");
 const organizePdf = ref(false);
 const organizerId = ref("");
-const downloadingOrg = ref<string | null>(null);
+// 当前选中服务商的 Key/Model 输入 (编辑后保存到后端配置)
+const apiKeyInput = ref("");
+const modelInput = ref("");
+const modelManual = ref(false);   // Model 下拉是否处于"手动输入"模式
+const modelOptions = ref<string[]>([]); // Model 下拉选项
+const fetchingModels = ref(false);
+const customBaseUrl = ref("");
+const customModel = ref("");
+const customKey = ref("");
 
 const LANG_OPTS = [
   { value: "zh", label: "中文" },
@@ -113,6 +129,8 @@ onMounted(async () => {
     env.value = await invoke<V2pEnv>("v2p_check_env");
     if (env.value.models.length) modelId.value = env.value.models[0].id;
     if (env.value.organizers.length) organizerId.value = env.value.organizers[0].id;
+    // 加载整理服务商配置
+    await loadOrganizerConfig();
     // 设备自动检测
     if (env.value.device.available.includes("cuda")) {
       device.value = "auto";
@@ -196,23 +214,114 @@ async function downloadModel(id: string) {
   }
 }
 
-async function downloadOrganizer(id: string) {
-  downloadingOrg.value = id;
-  dlMsg.value = "";
-  try {
-    await invoke("v2p_download_organizer", { organizerId: id });
-    dlMsg.value = "整理模型下载完成";
-    env.value = await invoke<V2pEnv>("v2p_check_env");
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    downloadingOrg.value = null;
-  }
-}
-
 const selectedOrganizer = computed(() =>
   env.value?.organizers.find((o) => o.id === organizerId.value),
 );
+
+// 当前服务商选中时填充 Key/Model 输入框
+function fillOrganizerInputs() {
+  const sel = selectedOrganizer.value;
+  if (!sel) return;
+  if (sel.id === "custom") {
+    customBaseUrl.value = orgCfg.value.custom.base_url || "";
+    customModel.value = orgCfg.value.custom.model || "";
+    customKey.value = orgCfg.value.custom.api_key || "";
+  } else {
+    apiKeyInput.value = orgCfg.value.keys[sel.id] || "";
+    // Model 下拉选项: 预置列表 + 已保存值(去重)
+    const saved = orgCfg.value.models[sel.id] || "";
+    const opts = [...sel.models];
+    if (saved && !opts.includes(saved)) opts.push(saved);
+    modelOptions.value = opts;
+    // 已保存值在预置列表中→正常下拉; 否则→手动输入模式
+    if (saved && sel.models.length && !sel.models.includes(saved)) {
+      modelManual.value = true;
+      modelInput.value = saved;
+    } else {
+      modelManual.value = false;
+      modelInput.value = saved || sel.default_model;
+    }
+  }
+}
+
+// 服务商切换时刷新输入框
+watch(organizerId, () => {
+  fillOrganizerInputs();
+});
+
+let orgCfg = ref<OrganizerConfig>({
+  keys: {},
+  models: {},
+  custom: { base_url: "", model: "", api_key: "" },
+});
+
+async function loadOrganizerConfig() {
+  try {
+    orgCfg.value = await invoke<OrganizerConfig>("v2p_get_organizer_config");
+  } catch (e) {
+    console.error("加载配置失败", e);
+  }
+  fillOrganizerInputs();
+}
+
+async function saveOrganizerConfig() {
+  const sel = selectedOrganizer.value;
+  if (!sel) return;
+  if (sel.id === "custom") {
+    orgCfg.value.custom = {
+      base_url: customBaseUrl.value.trim(),
+      model: customModel.value.trim(),
+      api_key: customKey.value.trim(),
+    };
+  } else {
+    orgCfg.value.keys[sel.id] = apiKeyInput.value.trim();
+    if (modelInput.value.trim() && modelInput.value.trim() !== sel.default_model) {
+      orgCfg.value.models[sel.id] = modelInput.value.trim();
+    } else {
+      delete orgCfg.value.models[sel.id];
+    }
+  }
+  try {
+    await invoke("v2p_set_organizer_config", { config: orgCfg.value });
+    pdfMsg.value = "配置已保存";
+    env.value = await invoke<V2pEnv>("v2p_check_env");
+  } catch (e) {
+    error.value = String(e);
+  }
+}
+
+// 动态拉取服务商模型列表
+async function fetchOrganizerModels() {
+  const sel = selectedOrganizer.value;
+  if (!sel) return;
+  fetchingModels.value = true;
+  pdfMsg.value = "";
+  try {
+    const list = await invoke<string[]>("v2p_list_organizer_models", {
+      providerId: sel.id,
+    });
+    modelOptions.value = list;
+    if (!modelInput.value || !list.includes(modelInput.value)) {
+      modelManual.value = true; // 当前值不在列表中, 保持手动输入
+    }
+    pdfMsg.value = `获取到 ${list.length} 个模型`;
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    fetchingModels.value = false;
+  }
+}
+
+// Model 下拉选择: 选真实模型则退出手动模式, 选手动输入则切手动
+function onModelSelect(e: Event) {
+  const v = (e.target as HTMLSelectElement).value;
+  if (v === "__manual__") {
+    modelManual.value = true;
+    return;
+  }
+  modelInput.value = v;
+  modelManual.value = false;
+}
 
 function fmtTs(s: number): string {
   if (!isFinite(s) || s <= 0) return "";
@@ -354,19 +463,66 @@ const deviceOptions = computed(() => {
     </div>
 
     <div v-if="organizePdf && env?.organizers.length" class="row">
-      <label>整理模型</label>
+      <label>整理服务商</label>
       <select v-model="organizerId" class="grow">
         <option v-for="o in env.organizers" :key="o.id" :value="o.id">
-          {{ o.name }} {{ o.downloaded ? "✓" : "✗" }}
+          {{ o.name }} {{ o.has_key ? "✓" : "" }}
         </option>
       </select>
-      <button
-        v-if="selectedOrganizer && !selectedOrganizer.downloaded"
-        :disabled="downloadingOrg !== null"
-        @click="downloadOrganizer(selectedOrganizer.id)"
+    </div>
+
+    <div v-if="selectedOrganizer && selectedOrganizer.id !== 'custom'" class="row">
+      <label>API Key</label>
+      <input
+        class="path"
+        type="password"
+        v-model="apiKeyInput"
+        :placeholder="selectedOrganizer.has_key ? '已配置, 输入可修改' : '粘贴 API Key'"
+      />
+    </div>
+
+    <div v-if="selectedOrganizer && selectedOrganizer.id !== 'custom'" class="row">
+      <label>Model</label>
+      <select
+        v-if="!modelManual"
+        class="grow"
+        :value="modelInput"
+        @change="onModelSelect($event)"
       >
-        {{ downloadingOrg === selectedOrganizer.id ? "下载中…" : "下载" }}
+        <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+        <option value="__manual__">✏️ 手动输入…</option>
+      </select>
+      <button v-if="!modelManual" @click="modelManual = true">手动</button>
+      <input
+        v-else
+        class="path"
+        v-model="modelInput"
+        :placeholder="selectedOrganizer.needs_model ? '填 Endpoint ID/模型 ID' : '输入模型名'"
+      />
+      <button
+        :disabled="fetchingModels || !apiKeyInput.trim()"
+        @click="fetchOrganizerModels"
+        :title="apiKeyInput.trim() ? '从服务商拉取模型列表' : '先填 API Key'"
+      >
+        {{ fetchingModels ? "获取中…" : "获取列表" }}
       </button>
+    </div>
+
+    <div v-if="selectedOrganizer && selectedOrganizer.id === 'custom'" class="row">
+      <label>Base URL</label>
+      <input class="path" v-model="customBaseUrl" placeholder="https://api.example.com/v1" />
+    </div>
+    <div v-if="selectedOrganizer && selectedOrganizer.id === 'custom'" class="row">
+      <label>Model</label>
+      <input class="path" v-model="customModel" placeholder="模型名" />
+    </div>
+    <div v-if="selectedOrganizer && selectedOrganizer.id === 'custom'" class="row">
+      <label>API Key</label>
+      <input class="path" type="password" v-model="customKey" placeholder="粘贴 API Key" />
+    </div>
+
+    <div v-if="selectedOrganizer" class="row">
+      <button @click="saveOrganizerConfig">保存配置</button>
     </div>
 
     <p v-if="dlMsg" class="ok">{{ dlMsg }}</p>

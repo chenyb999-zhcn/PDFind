@@ -9,4 +9,5 @@ pub mod llamacpp;
 pub mod models;
 #[cfg(windows)]
 pub mod ocr;
+pub mod organizer;
 pub mod pdf;
