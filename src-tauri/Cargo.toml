@@ -1,6 +1,6 @@
 [package]
 name = "pdfind"
-version = "0.3.1"
+version = "0.4.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -30,6 +30,7 @@ sherpa-onnx = "1.13"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 genpdf = { version = "0.2", features = ["images"] }
 ureq = { version = "2", features = ["json"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
 tar = "0.4"
 bzip2 = "0.4"
 flate2 = "1"

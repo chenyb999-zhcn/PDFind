@@ -1,6 +1,6 @@
 // 视频转 PDF: tauri 命令 (模型管理 + 设备 + 转写 + PDF)
 use crate::state::SearchState;
-use crate::v2p::{asr, device, download, ffmpeg, llamacpp, models, organizer, pdf};
+use crate::v2p::{asr, device, download, ffmpeg, llamacpp, llm, models, organizer, pdf};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -442,72 +442,30 @@ fn organize_with_llm(
     provider_id: &str,
 ) -> Result<String, String> {
     let cfg = organizer::load(app);
-    let (base_url, model, api_key) = if provider_id == "custom" {
-        let c = &cfg.custom;
-        if c.base_url.is_empty() || c.model.is_empty() || c.api_key.is_empty() {
-            return Err("自定义服务商需填 Base URL / Model / API Key".into());
-        }
-        (c.base_url.clone(), c.model.clone(), c.api_key.clone())
-    } else {
-        let p = models::organizer_providers()
-            .into_iter()
-            .find(|p| p.id == provider_id)
-            .ok_or_else(|| format!("未知服务商: {provider_id}"))?;
-        let key = cfg.keys.get(provider_id).cloned().unwrap_or_default();
-        if key.is_empty() {
-            return Err(format!("{} 的 API Key 未配置", p.name));
-        }
-        // model: 用户覆盖优先, 否则默认; 豆包必须填
-        let model = cfg
-            .models
-            .get(provider_id)
-            .cloned()
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| p.default_model.clone());
-        if model.is_empty() {
-            return Err(format!("{} 需填写 Model(Endpoint ID)", p.name));
-        }
-        (p.base_url.clone(), model, key)
-    };
-    if base_url.is_empty() {
-        return Err("Base URL 为空".into());
-    }
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-
-    // 构造请求体
-    let sys = "你是一个文档整理助手。请把下面的语音转写稿整理成条理清晰的结构化内容：按主题分成若干章节，每章节给出标题和要点列表。直接输出整理结果，不要多余解释。";
-    let body = serde_json::json!({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": sys},
-            {"role": "user", "content": transcript}
-        ],
-        "temperature": 0.6,
-        "max_tokens": 4096
-    });
-
+    let (base_url, model, api_key) = llm::resolve_llm(&cfg, provider_id)?;
     emit_log(app, &format!("调用 {} 在线整理… ({model})", provider_id));
-    let resp = ureq::post(&url)
-        .timeout(std::time::Duration::from_secs(300))
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .set("Content-Type", "application/json")
-        .send_json(body)
-        .map_err(|e| format!("在线整理请求失败: {e}"))?;
-    let status = resp.status();
-    if status != 200 {
-        let body_txt = resp.into_string().unwrap_or_default();
-        return Err(format!("在线整理返回 HTTP {status}: {}", &body_txt.chars().take(300).collect::<String>()));
-    }
-    let json: serde_json::Value = resp.into_json().map_err(|e| format!("解析响应失败: {e}"))?;
-    let text = json["choices"][0]["message"]["content"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or("在线整理响应无内容")?;
-    let text = text.trim().to_string();
-    if text.is_empty() {
-        return Err("整理无输出".into());
-    }
-    Ok(text)
+    let lang_hint = if lang == "en" {
+        "用英文整理"
+    } else if lang == "ja" {
+        "用日文整理"
+    } else {
+        "用中文整理"
+    };
+    let sys = format!(
+        "你是一个文档整理助手。请{lang_hint}，把下面的语音转写稿整理成条理清晰的结构化内容：按主题分成若干章节，每章节给出标题和要点列表。直接输出整理结果，不要多余解释。"
+    );
+    llm::llm_chat(
+        &base_url,
+        &model,
+        &api_key,
+        &[
+            ("system".to_string(), sys),
+            ("user".to_string(), transcript.to_string()),
+        ],
+        0.6,
+        4096,
+        300,
+    )
 }
 
 // 生成 PDF: 转写分段 + 视频截图 + 可选本地 LLM 整理
@@ -521,6 +479,7 @@ pub async fn v2p_generate_pdf(
     segments: Vec<SegmentInfo>, // 带时间戳的分段(用于按时间分章)
     organize: bool,         // 是否用在线大模型整理成章节
     organizer_id: String,   // 选择的整理服务商 id
+    save_to_kb: bool,       // 生成后存入知识库
 ) -> Result<(), String> {
     let font = cn_font().ok_or("未找到系统中文字体")?;
 
@@ -536,12 +495,14 @@ pub async fn v2p_generate_pdf(
     .map_err(|e| e)?;
     emit_log(&app, &format!("截图 {} 张", frames.len()));
 
-    // 在线大模型整理
+    // 在线大模型整理 (大纲另存一份, 供知识库 meta 展示)
+    let mut outline_md: Option<String> = None;
     let mut chapters = if organize {
         emit_log(&app, "在线大模型整理转写稿…");
         match organize_with_llm(&app, &transcript, &lang, &organizer_id) {
             Ok(md) => {
                 emit_log(&app, "LLM 整理完成");
+                outline_md = Some(md.clone());
                 md.lines()
                     .filter(|l| !l.trim().is_empty())
                     .map(|l| {
@@ -592,6 +553,30 @@ pub async fn v2p_generate_pdf(
     pdf::render_pdf(&spec, &font, &out_pdf)?;
     let _ = std::fs::remove_dir_all(&frame_dir);
     emit_log(&app, &format!("PDF 已生成: {out_pdf}"));
+
+    // 存入知识库 (失败不影响 PDF 生成结果)
+    if save_to_kb {
+        emit_log(&app, "存入知识库…");
+        match crate::kb::db::Db::open(&app) {
+            Ok(d) => match crate::kb::ingest::ingest_video(
+                &d,
+                &media_path,
+                Some(&out_pdf),
+                &lang,
+                &segments,
+                outline_md.as_deref(),
+                &mut |l| emit_log(&app, l),
+            ) {
+                Ok(r) => emit_log(&app, &format!(
+                    "已存入知识库: {} 块{}",
+                    r.chunks,
+                    if r.embedded { " (含向量)" } else { " (无向量, embedding 模型未下载)" }
+                )),
+                Err(e) => emit_log(&app, &format!("存入知识库失败: {e}")),
+            },
+            Err(e) => emit_log(&app, &format!("知识库打开失败: {e}")),
+        }
+    }
     Ok(())
 }
 

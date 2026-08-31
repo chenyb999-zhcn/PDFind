@@ -6,6 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import Preview from "./components/Preview.vue";
 import DirTree from "./components/DirTree.vue";
 import VideoToPdf from "./components/VideoToPdf.vue";
+import KnowledgeBase from "./components/KnowledgeBase.vue";
 
 interface Hit {
   page: number;
@@ -95,8 +96,8 @@ const treeVisible = ref(
   })(),
 );
 
-// 顶部标签页: "search" | "v2p"
-const activeTab = ref<"search" | "v2p">("search");
+// 顶部标签页: "search" | "v2p" | "kb"
+const activeTab = ref<"search" | "v2p" | "kb">("search");
 
 // 搜索关键字历史记录 (最多10条，本地持久化)
 const keywordHistory = ref<string[]>([]);
@@ -356,9 +357,19 @@ const totalHits = () => results.value.reduce((s, r) => s + r.hits.length, 0);
       >
         视频转 PDF
       </button>
+      <button
+        class="tab"
+        :class="{ on: activeTab === 'kb' }"
+        @click="activeTab = 'kb'"
+      >
+        知识库
+      </button>
     </div>
     <div v-if="activeTab === 'v2p'" class="v2p-body">
       <VideoToPdf />
+    </div>
+    <div v-else-if="activeTab === 'kb'" class="v2p-body">
+      <KnowledgeBase />
     </div>
     <div v-else class="body">
       <DirTree v-show="treeVisible" class="tree-panel" @pick="onTreePick" />

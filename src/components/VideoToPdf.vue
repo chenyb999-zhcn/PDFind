@@ -82,6 +82,7 @@ const generatingPdf = ref(false);
 const pdfMsg = ref("");
 const organizePdf = ref(false);
 const organizerId = ref("");
+const saveToKb = ref(true);
 // 当前选中服务商的 Key/Model 输入 (编辑后保存到后端配置)
 const apiKeyInput = ref("");
 const modelInput = ref("");
@@ -354,6 +355,7 @@ async function generatePdf() {
       segments: resultSegs.value,
       organize: organizePdf.value,
       organizerId: organizerId.value,
+      saveToKb: saveToKb.value,
     });
     pdfMsg.value = `PDF 已生成: ${out}`;
   } catch (e) {
@@ -459,6 +461,10 @@ const deviceOptions = computed(() => {
       <label v-if="resultSegs.length" class="chk">
         <input type="checkbox" v-model="organizePdf" />
         本地 LLM 整理
+      </label>
+      <label v-if="resultSegs.length" class="chk">
+        <input type="checkbox" v-model="saveToKb" />
+        存入知识库
       </label>
     </div>
 

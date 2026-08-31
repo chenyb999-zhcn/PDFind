@@ -1,6 +1,7 @@
 mod cache;
 mod commands;
 mod engine;
+mod kb;
 #[cfg(windows)]
 mod ocr;
 mod pdfx;
@@ -30,7 +31,14 @@ pub fn run() {
             v2p::commands::v2p_set_organizer_config,
             v2p::commands::v2p_list_organizer_models,
             v2p::commands::v2p_transcribe,
-            v2p::commands::v2p_generate_pdf
+            v2p::commands::v2p_generate_pdf,
+            kb::commands::kb_overview,
+            kb::commands::kb_remove_doc,
+            kb::commands::kb_add_pdf,
+            kb::commands::kb_add_text,
+            kb::commands::kb_download_embed_model,
+            kb::commands::kb_ask,
+            kb::commands::kb_search
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

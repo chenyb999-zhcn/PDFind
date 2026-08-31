@@ -6,6 +6,7 @@ pub mod device;
 pub mod download;
 pub mod ffmpeg;
 pub mod llamacpp;
+pub mod llm;
 pub mod models;
 #[cfg(windows)]
 pub mod ocr;
